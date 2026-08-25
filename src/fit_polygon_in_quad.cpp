@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <chrono>
 #include <exception>
+#include <limits>
 
 using namespace kiwi;
 
@@ -113,7 +114,9 @@ void set_basic_constraints(
 
 extern "C" Aabb2 fit_polygon_in_quad_impl(double *points, int length)
 {
-  // Fallback: current polygon AABB if the solver throws across this extern "C" boundary.
+  // Fallback: the input polygon's AABB, which is the current crop polygon here,
+  // so returning it is a correct no-op if the solver throws across this
+  // extern "C" boundary.
   Aabb2 fallback = compute_aabb(get_polygon_points_vec(points, length));
 
   try
@@ -188,8 +191,15 @@ extern "C" Aabb2 fit_polygon_in_quad_on_resize_impl(double *points,
                                                     bool isBottomLeftStatic,
                                                     bool isBottomRightStatic)
 {
-  // Fallback: pre-resize crop AABB so a solver failure makes the drag a no-op.
-  Aabb2 fallback = compute_aabb(get_polygon_points_vec(points, length));
+  // The input polygon here is the post-drag *candidate* rect, not the pre-resize
+  // one, so returning its AABB on failure would adopt a rect the solver just
+  // rejected. Instead, signal failure to the Dart side with a non-finite (NaN)
+  // sentinel; the caller is responsible for keeping the pre-resize state.
+  const double nan_value = std::numeric_limits<double>::quiet_NaN();
+  Aabb2 failure_sentinel = Aabb2{
+      Vector2{nan_value, nan_value},
+      Vector2{nan_value, nan_value},
+  };
 
   try
   {
@@ -304,10 +314,10 @@ extern "C" Aabb2 fit_polygon_in_quad_on_resize_impl(double *points,
   }
   catch (const std::exception &)
   {
-    return fallback;
+    return failure_sentinel;
   }
   catch (...)
   {
-    return fallback;
+    return failure_sentinel;
   }
 }
