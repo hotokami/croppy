@@ -51,6 +51,13 @@ class MaterialCroppableImageController
       aspectRatio: currentAspectRatio?.ratio,
     );
 
+    // The solver returns non-finite values when it can't find a solution. In
+    // that case, don't adopt the candidate rect: keep the pre-resize data so
+    // this drag frame becomes a no-op.
+    if (!_isFinite(newAabb)) {
+      return data;
+    }
+
     newData = newData.copyWith(
       cropRect: newAabb.rect,
     );
@@ -84,6 +91,12 @@ class MaterialCroppableImageController
     setViewportScale();
   }
 }
+
+bool _isFinite(Aabb2 aabb) =>
+    aabb.min.x.isFinite &&
+    aabb.min.y.isFinite &&
+    aabb.max.x.isFinite &&
+    aabb.max.y.isFinite;
 
 List<CropAspectRatio?> _createDefaultAspectRatios(Size imageSize) {
   return [

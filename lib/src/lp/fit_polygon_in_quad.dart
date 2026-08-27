@@ -51,6 +51,13 @@ class FitPolygonInQuadSolver {
     return fitPolygonInQuadImpl(polygon, normalizedQuad);
   }
 
+  /// Fits [polygon] in [quad], keeping [staticCorners] in place and optionally
+  /// enforcing [aspectRatio].
+  ///
+  /// If the solver can't find a solution (e.g. the constraints are
+  /// unsatisfiable), this may return an [Aabb2] containing non-finite values.
+  /// Callers must verify that the result is finite before adopting it, and fall
+  /// back to their previous state otherwise.
   static Aabb2 solveWithStaticPointsAndAspectRatio(
     Polygon2 polygon,
     Quad2 quad, {

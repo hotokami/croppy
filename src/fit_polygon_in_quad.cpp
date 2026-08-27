@@ -4,6 +4,8 @@
 #include <vector>
 #include <algorithm>
 #include <chrono>
+#include <exception>
+#include <limits>
 
 using namespace kiwi;
 
@@ -112,57 +114,73 @@ void set_basic_constraints(
 
 extern "C" Aabb2 fit_polygon_in_quad_impl(double *points, int length)
 {
-  solver.reset();
-  std::vector<Vector2> quad_points_vec = get_quad_points_vec(points, length);
-  std::vector<Vector2> polygon_points_vec = get_polygon_points_vec(points, length);
+  // Fallback: the input polygon's AABB, which is the current crop polygon here,
+  // so returning it is a correct no-op if the solver throws across this
+  // extern "C" boundary.
+  Aabb2 fallback = compute_aabb(get_polygon_points_vec(points, length));
 
-  Aabb2 quad_aabb = compute_aabb(quad_points_vec);
-  Aabb2 polygon_aabb = compute_aabb(polygon_points_vec);
-  Vector2 polygon_size = compute_aabb_size(polygon_aabb);
+  try
+  {
+    solver.reset();
+    std::vector<Vector2> quad_points_vec = get_quad_points_vec(points, length);
+    std::vector<Vector2> polygon_points_vec = get_polygon_points_vec(points, length);
 
-  Variable out_x("out_x");
-  Variable out_y("out_y");
-  Variable out_a("out_a");
+    Aabb2 quad_aabb = compute_aabb(quad_points_vec);
+    Aabb2 polygon_aabb = compute_aabb(polygon_points_vec);
+    Vector2 polygon_size = compute_aabb_size(polygon_aabb);
 
-  set_basic_constraints(solver, quad_points_vec, polygon_points_vec, out_x, out_y, out_a, out_a);
+    Variable out_x("out_x");
+    Variable out_y("out_y");
+    Variable out_a("out_a");
 
-  Constraint objective_constraint_1 = Constraint{out_a == 1.0 | strength::required - 1};
+    set_basic_constraints(solver, quad_points_vec, polygon_points_vec, out_x, out_y, out_a, out_a);
 
-  out_x.setValue(polygon_aabb.min.x);
-  out_y.setValue(polygon_aabb.min.y);
-  out_a.setValue(1);
+    Constraint objective_constraint_1 = Constraint{out_a == 1.0 | strength::required - 1};
 
-  solver.addConstraint(objective_constraint_1);
-  solver.updateVariables();
+    out_x.setValue(polygon_aabb.min.x);
+    out_y.setValue(polygon_aabb.min.y);
+    out_a.setValue(1);
 
-  double result_a = out_a.value();
+    solver.addConstraint(objective_constraint_1);
+    solver.updateVariables();
 
-  solver.removeConstraint(objective_constraint_1);
-  solver.addConstraint(Constraint{out_a == result_a});
+    double result_a = out_a.value();
 
-  Variable x_dist("x_dist");
-  Variable y_dist("y_dist");
+    solver.removeConstraint(objective_constraint_1);
+    solver.addConstraint(Constraint{out_a == result_a});
 
-  solver.addConstraint(Constraint{x_dist >= 0});
-  solver.addConstraint(Constraint{y_dist >= 0});
+    Variable x_dist("x_dist");
+    Variable y_dist("y_dist");
 
-  solver.addConstraint(Constraint{x_dist >= polygon_aabb.min.x - out_x});
-  solver.addConstraint(Constraint{x_dist >= out_x - polygon_aabb.min.x});
-  solver.addConstraint(Constraint{y_dist >= polygon_aabb.min.y - out_y});
-  solver.addConstraint(Constraint{y_dist >= out_y - polygon_aabb.min.y});
+    solver.addConstraint(Constraint{x_dist >= 0});
+    solver.addConstraint(Constraint{y_dist >= 0});
 
-  Constraint objective_constraint_2 = Constraint{x_dist + y_dist == 0 | strength::required - 1};
+    solver.addConstraint(Constraint{x_dist >= polygon_aabb.min.x - out_x});
+    solver.addConstraint(Constraint{x_dist >= out_x - polygon_aabb.min.x});
+    solver.addConstraint(Constraint{y_dist >= polygon_aabb.min.y - out_y});
+    solver.addConstraint(Constraint{y_dist >= out_y - polygon_aabb.min.y});
 
-  solver.addConstraint(objective_constraint_2);
-  solver.updateVariables();
+    Constraint objective_constraint_2 = Constraint{x_dist + y_dist == 0 | strength::required - 1};
 
-  double result_x = out_x.value();
-  double result_y = out_y.value();
+    solver.addConstraint(objective_constraint_2);
+    solver.updateVariables();
 
-  return Aabb2{
-      Vector2{result_x, result_y},
-      Vector2{result_x + polygon_size.x * result_a, result_y + polygon_size.y * result_a},
-  };
+    double result_x = out_x.value();
+    double result_y = out_y.value();
+
+    return Aabb2{
+        Vector2{result_x, result_y},
+        Vector2{result_x + polygon_size.x * result_a, result_y + polygon_size.y * result_a},
+    };
+  }
+  catch (const std::exception &)
+  {
+    return fallback;
+  }
+  catch (...)
+  {
+    return fallback;
+  }
 }
 
 extern "C" Aabb2 fit_polygon_in_quad_on_resize_impl(double *points,
@@ -173,112 +191,133 @@ extern "C" Aabb2 fit_polygon_in_quad_on_resize_impl(double *points,
                                                     bool isBottomLeftStatic,
                                                     bool isBottomRightStatic)
 {
-  solver.reset();
-  std::vector<Vector2> quad_points_vec = get_quad_points_vec(points, length);
-  std::vector<Vector2> polygon_points_vec = get_polygon_points_vec(points, length);
-
-  Aabb2 quad_aabb = compute_aabb(quad_points_vec);
-  Aabb2 polygon_aabb = compute_aabb(polygon_points_vec);
-  Vector2 polygon_size = compute_aabb_size(polygon_aabb);
-
-  Variable out_x("out_x");
-  Variable out_y("out_y");
-  Variable out_ax("out_ax");
-  Variable out_ay("out_ay");
-
-  set_basic_constraints(solver, quad_points_vec, polygon_points_vec, out_x, out_y, out_ax, out_ay);
-
-  if (aspectRatio != 0.0)
-  {
-    solver.addConstraint(Constraint{out_ax * polygon_size.x == out_ay * polygon_size.y * aspectRatio});
-  }
-
-  std::vector<Expression> static_point_x_expressions;
-  std::vector<Expression> static_point_y_expressions;
-
-  std::vector<double> static_point_x_equal_values;
-  std::vector<double> static_point_y_equal_values;
-
-  if (isTopLeftStatic)
-  {
-    static_point_x_expressions.push_back(Expression{out_x});
-    static_point_y_expressions.push_back(Expression{out_y});
-
-    static_point_x_equal_values.push_back(polygon_aabb.min.x);
-    static_point_y_equal_values.push_back(polygon_aabb.min.y);
-  }
-
-  if (isTopRightStatic)
-  {
-    static_point_x_expressions.push_back(Expression{out_x + out_ax * polygon_size.x});
-    static_point_y_expressions.push_back(Expression{out_y});
-
-    static_point_x_equal_values.push_back(polygon_aabb.max.x);
-    static_point_y_equal_values.push_back(polygon_aabb.min.y);
-  }
-
-  if (isBottomLeftStatic)
-  {
-    static_point_x_expressions.push_back(Expression{out_x});
-    static_point_y_expressions.push_back(Expression{out_y + out_ay * polygon_size.y});
-
-    static_point_x_equal_values.push_back(polygon_aabb.min.x);
-    static_point_y_equal_values.push_back(polygon_aabb.max.y);
-  }
-
-  if (isBottomRightStatic)
-  {
-    static_point_x_expressions.push_back(Expression{out_x + out_ax * polygon_size.x});
-    static_point_y_expressions.push_back(Expression{out_y + out_ay * polygon_size.y});
-
-    static_point_x_equal_values.push_back(polygon_aabb.max.x);
-    static_point_y_equal_values.push_back(polygon_aabb.max.y);
-  }
-
-  Expression x_points_expression = Expression{};
-  Expression y_points_expression = Expression{};
-
-  double x_points_equals = 0.0;
-  double y_points_equals = 0.0;
-
-  for (int i = 0; i < static_point_x_expressions.size(); i++)
-  {
-    auto x_expression = static_point_x_expressions[i];
-    auto y_expression = static_point_y_expressions[i];
-
-    double x_equal_value = static_point_x_equal_values[i];
-    double y_equal_value = static_point_y_equal_values[i];
-
-    x_points_expression = x_points_expression + x_expression;
-    y_points_expression = y_points_expression + y_expression;
-
-    x_points_equals += x_equal_value;
-    y_points_equals += y_equal_value;
-  }
-
-  solver.addConstraint(Constraint{x_points_expression == x_points_equals});
-  solver.addConstraint(Constraint{y_points_expression == y_points_equals});
-
-  Constraint objective_constraint_1 = Constraint{out_ax == 1.0 | strength::required - 1};
-  Constraint objective_constraint_2 = Constraint{out_ay == 1.0 | strength::required - 1};
-
-  out_x.setValue(polygon_aabb.min.x);
-  out_y.setValue(polygon_aabb.min.y);
-  out_ax.setValue(1);
-  out_ay.setValue(1);
-
-  solver.addConstraint(objective_constraint_1);
-  solver.addConstraint(objective_constraint_2);
-
-  solver.updateVariables();
-
-  double result_x = out_x.value();
-  double result_y = out_y.value();
-  double result_ax = out_ax.value();
-  double result_ay = out_ay.value();
-
-  return Aabb2{
-      Vector2{result_x, result_y},
-      Vector2{result_x + polygon_size.x * result_ax, result_y + polygon_size.y * result_ay},
+  // The input polygon here is the post-drag *candidate* rect, not the pre-resize
+  // one, so returning its AABB on failure would adopt a rect the solver just
+  // rejected. Instead, signal failure to the Dart side with a non-finite (NaN)
+  // sentinel; the caller is responsible for keeping the pre-resize state.
+  const double nan_value = std::numeric_limits<double>::quiet_NaN();
+  Aabb2 failure_sentinel = Aabb2{
+      Vector2{nan_value, nan_value},
+      Vector2{nan_value, nan_value},
   };
+
+  try
+  {
+    solver.reset();
+    std::vector<Vector2> quad_points_vec = get_quad_points_vec(points, length);
+    std::vector<Vector2> polygon_points_vec = get_polygon_points_vec(points, length);
+
+    Aabb2 quad_aabb = compute_aabb(quad_points_vec);
+    Aabb2 polygon_aabb = compute_aabb(polygon_points_vec);
+    Vector2 polygon_size = compute_aabb_size(polygon_aabb);
+
+    Variable out_x("out_x");
+    Variable out_y("out_y");
+    Variable out_ax("out_ax");
+    Variable out_ay("out_ay");
+
+    set_basic_constraints(solver, quad_points_vec, polygon_points_vec, out_x, out_y, out_ax, out_ay);
+
+    if (aspectRatio != 0.0)
+    {
+      solver.addConstraint(Constraint{out_ax * polygon_size.x == out_ay * polygon_size.y * aspectRatio});
+    }
+
+    std::vector<Expression> static_point_x_expressions;
+    std::vector<Expression> static_point_y_expressions;
+
+    std::vector<double> static_point_x_equal_values;
+    std::vector<double> static_point_y_equal_values;
+
+    if (isTopLeftStatic)
+    {
+      static_point_x_expressions.push_back(Expression{out_x});
+      static_point_y_expressions.push_back(Expression{out_y});
+
+      static_point_x_equal_values.push_back(polygon_aabb.min.x);
+      static_point_y_equal_values.push_back(polygon_aabb.min.y);
+    }
+
+    if (isTopRightStatic)
+    {
+      static_point_x_expressions.push_back(Expression{out_x + out_ax * polygon_size.x});
+      static_point_y_expressions.push_back(Expression{out_y});
+
+      static_point_x_equal_values.push_back(polygon_aabb.max.x);
+      static_point_y_equal_values.push_back(polygon_aabb.min.y);
+    }
+
+    if (isBottomLeftStatic)
+    {
+      static_point_x_expressions.push_back(Expression{out_x});
+      static_point_y_expressions.push_back(Expression{out_y + out_ay * polygon_size.y});
+
+      static_point_x_equal_values.push_back(polygon_aabb.min.x);
+      static_point_y_equal_values.push_back(polygon_aabb.max.y);
+    }
+
+    if (isBottomRightStatic)
+    {
+      static_point_x_expressions.push_back(Expression{out_x + out_ax * polygon_size.x});
+      static_point_y_expressions.push_back(Expression{out_y + out_ay * polygon_size.y});
+
+      static_point_x_equal_values.push_back(polygon_aabb.max.x);
+      static_point_y_equal_values.push_back(polygon_aabb.max.y);
+    }
+
+    Expression x_points_expression = Expression{};
+    Expression y_points_expression = Expression{};
+
+    double x_points_equals = 0.0;
+    double y_points_equals = 0.0;
+
+    for (int i = 0; i < static_point_x_expressions.size(); i++)
+    {
+      auto x_expression = static_point_x_expressions[i];
+      auto y_expression = static_point_y_expressions[i];
+
+      double x_equal_value = static_point_x_equal_values[i];
+      double y_equal_value = static_point_y_equal_values[i];
+
+      x_points_expression = x_points_expression + x_expression;
+      y_points_expression = y_points_expression + y_expression;
+
+      x_points_equals += x_equal_value;
+      y_points_equals += y_equal_value;
+    }
+
+    solver.addConstraint(Constraint{x_points_expression == x_points_equals});
+    solver.addConstraint(Constraint{y_points_expression == y_points_equals});
+
+    Constraint objective_constraint_1 = Constraint{out_ax == 1.0 | strength::required - 1};
+    Constraint objective_constraint_2 = Constraint{out_ay == 1.0 | strength::required - 1};
+
+    out_x.setValue(polygon_aabb.min.x);
+    out_y.setValue(polygon_aabb.min.y);
+    out_ax.setValue(1);
+    out_ay.setValue(1);
+
+    solver.addConstraint(objective_constraint_1);
+    solver.addConstraint(objective_constraint_2);
+
+    solver.updateVariables();
+
+    double result_x = out_x.value();
+    double result_y = out_y.value();
+    double result_ax = out_ax.value();
+    double result_ay = out_ay.value();
+
+    return Aabb2{
+        Vector2{result_x, result_y},
+        Vector2{result_x + polygon_size.x * result_ax, result_y + polygon_size.y * result_ay},
+    };
+  }
+  catch (const std::exception &)
+  {
+    return failure_sentinel;
+  }
+  catch (...)
+  {
+    return failure_sentinel;
+  }
 }
